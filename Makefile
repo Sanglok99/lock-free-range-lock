@@ -1,6 +1,6 @@
-obj-m := f3fs_range_lock_mod.o
+obj-m := range_lock_module.o
 
-f3fs_range_lock_mod-objs := lockfree_list.o f3fs_range_lock_mod.o
+range_lock_module-objs := lockfree_list.o f3fs_range_lock_mod.o
 
 KDIR := /lib/modules/$(shell uname -r)/build
 

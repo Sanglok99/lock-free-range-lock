@@ -1,7 +1,23 @@
+#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/slab.h>
+#include <linux/list.h>
+#include <linux/kthread.h>
+#include <linux/delay.h>
+#include <linux/types.h>
+#include <linux/errno.h>
+
+#include "lockfree_list.h"
+
+LIST_HEAD(test_workers); // test_workers: global list head for worker threads
+
+extern int test0_thread1(void *data);
+
 static int __init test_lockfree_range_lock_mod_init(void)
 {
 	int nr_workers = num_online_cpus();
-	worker_test_fn_t test_fn;
+	// worker_test_fn_t test_fn; 
 	int i;
 	struct ListRL *list_rl = kmalloc(sizeof(struct ListRL), GFP_KERNEL);
 	for (i = 0; i < nr_workers; i++) {

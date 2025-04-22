@@ -1,38 +1,10 @@
-#include "include/lockfree_list.h"
+#include "lockfree_list.h"
+#include <linux/kthread.h>          // kthread_should_stop
+#include <linux/delay.h>            // msleep, msleep_interruptible
 
-struct RangeLock* RWRangeAcquire(struct ListRL* list_rl,
-		unsigned long long start, unsigned long long end, bool writer)
-{
-	struct RangeLock* rl = kmalloc(sizeof(struct RangeLock), GFP_KERNEL);
-	int ret = 0;
-#if HASH_MODE
-	if (end == MAX_SIZE) {
-		assert(start == 0);
-		rl->bucket = ALL_RANGE;
-		for (int i = 0 ; i < BUCKET_CNT ; i++) {
-			rl->node[i] = InitNode(0, MAX_SIZE, writer);
-			do {
-				ret = InsertNodeRW(&list_rl->head[i], rl->node[i], false);
-			} while(ret);
-		}
-	} else {
-		int i = start % BUCKET_CNT;
-		assert(start + 1 == end);
-		rl->bucket = i;
-		rl->node[i] = InitNode(start, end, writer);
-		do {
-			ret = InsertNodeRW(&list_rl->head[i], rl->node[i], false);
-		} while(ret);
-	}
-	return rl;
-#else
-	rl->node = InitNode(start, end, writer);
-	do {
-		ret = InsertNodeRW(&list_rl->head, rl->node, false);
-	} while(ret); 
-	return rl;
-#endif
-}
+LIST_HEAD(test_workers);
+
+void DeleteNode(struct LNode* lock);
 
 struct LNode* InitNode(unsigned long long start, unsigned long long end, bool writer)
 {
@@ -44,95 +16,14 @@ struct LNode* InitNode(unsigned long long start, unsigned long long end, bool wr
 	return ret;
 }
 
-void DeleteNode(struct LNode* lock)
+bool marked(volatile struct LNode* node) // Check if tagged pointer
 {
-	while (true) {
-		volatile struct LNode* orig = lock->next;
-		unsigned long long marked = (unsigned long long)orig + 1;
-		if (cmpxchg(&lock->next, orig, (struct LNode*)marked) == orig) {
-			break;
-		}
-	}
+	return (unsigned long long)(node) & 0x1; // Casting the address stored in the pointer to an integer
 }
 
-struct LNode* unmark(volatile struct LNode* node)
+struct LNode* unmark(volatile struct LNode* node) // Get the original address of LNode from the tagged pointer
 {
-	return (struct LNode*)((unsigned long long)(node) & 0xFFFFFFFFFFFFFFFE);
-}
-
-int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try) 
-{
-	rcu_read_lock();
-	while (true) {
-		volatile struct LNode** prev = listrl;
-		struct LNode* cur = *prev;
-		while (true) {
-			if (marked(cur)){
-				break;
-			}
-			else {
-				if (cur && marked(cur->next)) {
-					struct LNode* next = unmark(cur->next);
-					if (cmpxchg(prev, cur, next) == cur) {
-						kfree_rcu(cur, rcu);
-					}
-					cur = next;
-				}
-				else {
-					int ret = compareRW(cur, lock);
-					if (ret == -1) {
-						prev = &cur->next;
-						cur = *prev;
-					} else if (ret == 0) {
-						if (try) {
-							rcu_read_unlock();
-							return -1;
-						}
-						while (!marked(cur->next)) {
-							cur = *prev;
-						}
-					} else if (ret == 1) {
-						lock->next = cur;
-						if (cmpxchg(prev, cur, lock) == cur) {
-							int ret = 0;
-							if (lock->reader) {
-								ret = r_validate(lock, try);
-							} else {
-								ret = w_validate(listrl, lock);
-							}
-							rcu_read_unlock();
-							return ret;
-						}
-						cur = *prev;
-					}
-				}
-			}
-		}
-	}
-	rcu_read_unlock();
-	return -1;
-}
-
-int compareRW(struct LNode* lock1, struct LNode* lock2)
-{
-	if (!lock1) {
-		return 1;
-	} else {
-		int readers = lock1->reader + lock2->reader;
-		if (lock2->start >= lock1->end) {
-			return -1;
-		}
-		if (lock2->start >= lock1->start && readers == 2) {
-			return -1;
-		}
-		if (lock1->start >= lock2->end) {
-			return 1;
-		}
-		if (lock1->start >= lock2->start && readers == 2) {
-			return 1;
-		}
-		return 0;
-	}
+	return (struct LNode*)((unsigned long long)(node) & 0xFFFFFFFFFFFFFFFE); // Clear the least significant bit (LSB) using bitmask 0xFFFFFFFFFFFFFFFE
 }
 
 int r_validate(struct LNode* lock, bool try)
@@ -195,19 +86,163 @@ int w_validate(volatile struct LNode** listrl, struct LNode* lock)
 	}
 }
 
+int compareRW(struct LNode* lock1, struct LNode* lock2)
+{
+	if (!lock1) {
+		return 1;
+	} else {
+		int readers = lock1->reader + lock2->reader;
+		if (lock2->start >= lock1->end) {
+			return -1;
+		}
+		if (lock2->start >= lock1->start && readers == 2) { // both lock1 and lock2 are readers
+			return -1;
+		}
+		if (lock1->start >= lock2->end) {
+			return 1;
+		}
+		if (lock1->start >= lock2->start && readers == 2) {
+			return 1;
+		}
+		return 0;
+	}
+}
+
+int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try) 
+{
+	rcu_read_lock();
+	while (true) {
+		volatile struct LNode** prev = listrl;
+		struct LNode* cur = *prev;
+		while (true) {
+			if (marked(cur)){ // If current is logically deleted, try again from the head
+				break;
+			}
+			else {
+				if (cur && marked(cur->next)) { // Case 1) If cur->next is logically deleted...
+					struct LNode* next = unmark(cur->next); // Decode LNode address from tagged pointer
+					if (cmpxchg(prev, cur, next) == cur) { // Physically delete when no more reference
+						kfree_rcu(cur, rcu);
+					}
+					cur = next;
+				}
+				else { // Case 2) If cur is not logically deleted...
+					int ret = compareRW(cur, lock); /* Compare range of cur and lock;
+									-1: cur < lo
+									0: cur == lo (conflict)
+									+1: cur > lk */
+					if (ret == -1) { // Case A) cur < lock; Proceed to the next lock in this bucket
+						prev = &cur->next;
+						cur = *prev;
+					} else if (ret == 0) { // Case B) Locks conflict each other
+						if (try) {
+							rcu_read_unlock();
+							return -1;
+						}
+						while (!marked(cur->next)) {
+							cur = *prev;
+						}
+					} else if (ret == 1) { // Case C) lock < cur; Found where to insert lock
+						lock->next = cur;
+						if (cmpxchg(prev, cur, lock) == cur) { // Try to insert new lock before cur
+							// Insertion succeed; validate the CAS result
+							int ret = 0; 
+							if (lock->reader) {
+								ret = r_validate(lock, try);
+							} else {
+								ret = w_validate(listrl, lock);
+							}
+							rcu_read_unlock();
+							return ret;
+						}
+						cur = *prev;
+					}
+				}
+			}
+		}
+	}
+	rcu_read_unlock();
+	return -1;
+}
+
+struct RangeLock* RWRangeAcquire(struct ListRL* list_rl,
+		unsigned long long start, unsigned long long end, bool writer)
+{
+	struct RangeLock* rl = kmalloc(sizeof(struct RangeLock), GFP_KERNEL);
+	int ret = 0;
+#if HASH_MODE
+	if (end == MAX_SIZE) {
+		assert(start == 0);
+		rl->bucket = ALL_RANGE;
+		for (int i = 0 ; i < BUCKET_CNT ; i++) {
+			rl->node[i] = InitNode(0, MAX_SIZE, writer);
+			do {
+				ret = InsertNodeRW(&list_rl->head[i], rl->node[i], false);
+			} while(ret);
+		}
+	} else {
+		int i = start % BUCKET_CNT;
+		assert(start + 1 == end);
+		rl->bucket = i;
+		rl->node[i] = InitNode(start, end, writer);
+		do {
+			ret = InsertNodeRW(&list_rl->head[i], rl->node[i], false);
+		} while(ret);
+	}
+	return rl;
+#else
+	rl->node = InitNode(start, end, writer);
+	do {
+		ret = InsertNodeRW(&list_rl->head, rl->node, false);
+	} while(ret); // Repeat while ret==1
+	return rl;
+#endif
+}
+
+void DeleteNode(struct LNode* lock)
+{
+	while (true) {
+		volatile struct LNode* orig = lock->next;
+		unsigned long long marked = (unsigned long long)orig + 1; // marking
+		if (cmpxchg(&lock->next, orig, (struct LNode*)marked) == orig) {
+			break;
+		}
+	}
+}
+
 void MutexRangeRelease(struct RangeLock* rl)
 {
 #if HASH_MODE
-	if (rl->bucket == ALL_RANGE) {
+	if (rl->bucket == ALL_RANGE) { // Case 1) Logically delete All-Range Lock
 		for (int i = 0 ; i < BUCKET_CNT ; i++) {
 			DeleteNode(rl->node[i]);
 		}
-	} else {
+	} else { // Case 2) Logically delete one Range Lock
 		DeleteNode(rl->node[rl->bucket]);
 	}
-	kfree(rl);
+	kfree(rl); // Physically delete Range Lock
 #else
 	DeleteNode(rl->node);
 	kfree(rl);
 #endif
+}
+
+int test0_thread1(void *data)
+{
+	struct test_worker *worker = data;
+	// struct RangeLock* lock, *lock2; // lock2 unused	
+	struct RangeLock* lock;
+	int range_start = worker->range_start;
+	int range_end = worker->range_end;
+	// int count = 0; // unused
+	while (!kthread_should_stop()) {
+		msleep_interruptible(500);
+		lock = RWRangeAcquire(worker->list_rl, range_start, range_end, true);
+		BUG_ON(!lock);
+		msleep(1000);
+		MutexRangeRelease(lock);
+		// count++; // unused
+		msleep_interruptible(1000);
+	}
+	return 0;
 }
