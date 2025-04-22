@@ -2,7 +2,7 @@
 #include <linux/kthread.h>          // kthread_should_stop
 #include <linux/delay.h>            // msleep, msleep_interruptible
 
-LIST_HEAD(test_workers);
+extern struct list_head test_workers;
 
 void DeleteNode(struct LNode* lock);
 

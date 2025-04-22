@@ -52,3 +52,7 @@ static void test_lockfree_range_lock_mod_cleanup(void)
 	}
 	kfree(list_rl);
 }
+
+MODULE_AUTHOR("Sanglok Lee");
+MODULE_DESCRIPTION("Lock-free range lock module");
+MODULE_LICENSE("GPL");

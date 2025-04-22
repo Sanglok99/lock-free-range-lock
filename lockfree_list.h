@@ -11,16 +11,6 @@
 
 #define LIST_HEAD(name) struct list_head name = LIST_HEAD_INIT(name)
 
-extern struct list_head test_workers;
-
-struct ListRL {
-#if HASH_MODE
-	volatile struct LNode* head[BUCKET_CNT];
-#else
-	volatile struct LNode* head;
-#endif
-};
-
 struct LNode {
 	unsigned int start;
 	unsigned int end;
@@ -30,6 +20,15 @@ struct LNode {
 	struct rcu_head rcu;
 #endif
 };
+
+struct ListRL {
+#if HASH_MODE
+	volatile struct LNode* head[BUCKET_CNT];
+#else
+	volatile struct LNode* head;
+#endif
+};
+
 
 struct RangeLock {
 #if HASH_MODE
