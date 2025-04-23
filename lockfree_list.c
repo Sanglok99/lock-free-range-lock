@@ -1,6 +1,9 @@
 #include "lockfree_list.h"
 #include <linux/kthread.h>          // kthread_should_stop
 #include <linux/delay.h>            // msleep, msleep_interruptible
+#include <asm/cmpxchg.h>
+
+#define TRY_ONCE true
 
 extern struct list_head test_workers;
 
@@ -17,7 +20,7 @@ struct LNode* InitNode(unsigned long long start, unsigned long long end, bool wr
 }
 
 bool marked(volatile struct LNode* node) // Check if tagged pointer
-{
+led to allocate memory for worker %d\n", i);{
 	return (unsigned long long)(node) & 0x1; // Casting the address stored in the pointer to an integer
 }
 
@@ -26,7 +29,7 @@ struct LNode* unmark(volatile struct LNode* node) // Get the original address of
 	return (struct LNode*)((unsigned long long)(node) & 0xFFFFFFFFFFFFFFFE); // Clear the least significant bit (LSB) using bitmask 0xFFFFFFFFFFFFFFFE
 }
 
-int r_validate(struct LNode* lock, bool try)
+int r_validate(struct LNode* lock, bool try_once)
 {
 	volatile struct LNode** prev = &lock->next;
 	struct LNode* cur = unmark(*prev);
@@ -47,7 +50,7 @@ int r_validate(struct LNode* lock, bool try)
 			prev = &cur->next;
 			cur = unmark(*prev);
 		} else {
-			if (try) {
+			if (try_once) {
 				return -1;
 			}
 			while (!marked(cur->next)) {
@@ -108,7 +111,7 @@ int compareRW(struct LNode* lock1, struct LNode* lock2)
 	}
 }
 
-int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try) 
+int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try_once) 
 {
 	rcu_read_lock();
 	while (true) {
@@ -128,14 +131,14 @@ int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try)
 				}
 				else { // Case 2) If cur is not logically deleted...
 					int ret = compareRW(cur, lock); /* Compare range of cur and lock;
-									-1: cur < lo
-									0: cur == lo (conflict)
-									+1: cur > lk */
+									-1: cur < lock
+									0: cur == lock (conflict)
+									+1: cur > lock */
 					if (ret == -1) { // Case A) cur < lock; Proceed to the next lock in this bucket
 						prev = &cur->next;
 						cur = *prev;
 					} else if (ret == 0) { // Case B) Locks conflict each other
-						if (try) {
+						if (try_once) {
 							rcu_read_unlock();
 							return -1;
 						}
@@ -148,7 +151,7 @@ int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try)
 							// Insertion succeed; validate the CAS result
 							int ret = 0; 
 							if (lock->reader) {
-								ret = r_validate(lock, try);
+								ret = r_validate(lock, try_once);
 							} else {
 								ret = w_validate(listrl, lock);
 							}
@@ -177,7 +180,7 @@ struct RangeLock* RWRangeAcquire(struct ListRL* list_rl,
 		for (int i = 0 ; i < BUCKET_CNT ; i++) {
 			rl->node[i] = InitNode(0, MAX_SIZE, writer);
 			do {
-				ret = InsertNodeRW(&list_rl->head[i], rl->node[i], false);
+				ret = InsertNodeRW(&list_rl->head[i], rl->node[i], TRY_ONCE);
 			} while(ret);
 		}
 	} else {
@@ -186,15 +189,16 @@ struct RangeLock* RWRangeAcquire(struct ListRL* list_rl,
 		rl->bucket = i;
 		rl->node[i] = InitNode(start, end, writer);
 		do {
-			ret = InsertNodeRW(&list_rl->head[i], rl->node[i], false);
+			ret = InsertNodeRW(&list_rl->head[i], rl->node[i], TRY_ONCE);
 		} while(ret);
 	}
 	return rl;
 #else
 	rl->node = InitNode(start, end, writer);
 	do {
-		ret = InsertNodeRW(&list_rl->head, rl->node, false);
+		ret = InsertNodeRW(&list_rl->head, rl->node, TRY_ONCE);
 	} while(ret); // Repeat while ret==1
+
 	return rl;
 #endif
 }
@@ -224,6 +228,8 @@ void MutexRangeRelease(struct RangeLock* rl)
 #else
 	DeleteNode(rl->node);
 	kfree(rl);
+
+	pr_info(
 #endif
 }
 
@@ -236,13 +242,24 @@ int test0_thread1(void *data)
 	int range_end = worker->range_end;
 	// int count = 0; // unused
 	while (!kthread_should_stop()) {
-		msleep_interruptible(500);
+		if(msleep_interruptible(500)){
+			break;
+		}
+
 		lock = RWRangeAcquire(worker->list_rl, range_start, range_end, true);
+		
 		BUG_ON(!lock);
-		msleep(1000);
+
+		if(msleep_interruptible(1000)){
+			break;
+		}
+
 		MutexRangeRelease(lock);
 		// count++; // unused
-		msleep_interruptible(1000);
+
+		if(msleep_interruptible(1000)){
+			break;
+		}
 	}
 	return 0;
 }

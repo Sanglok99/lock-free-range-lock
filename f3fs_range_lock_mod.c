@@ -7,6 +7,7 @@
 #include <linux/delay.h>
 #include <linux/types.h>
 #include <linux/errno.h>
+#include <linux/printk.h>
 
 #include "lockfree_list.h"
 
@@ -20,22 +21,30 @@ static int __init test_lockfree_range_lock_mod_init(void)
 	// worker_test_fn_t test_fn; 
 	int i;
 	struct ListRL *list_rl = kmalloc(sizeof(struct ListRL), GFP_KERNEL);
+
+	pr_info("Lock-free range lock module loading: %d workers\n", nr_workers);
+
 	for (i = 0; i < nr_workers; i++) {
 		struct test_worker *worker = kmalloc(sizeof(struct test_worker), GFP_KERNEL);
-		worker->worker_id = i;
-		worker->range_start = (2 * i) % nr_workers;
-		worker->range_end = (2 * i + 1) % nr_workers;
 		if (!worker) {
+			pr_err("Failed to allocate memory for worker %d\n", i);
 			continue;
 		}
+		worker->worker_id = i; 
+		worker->range_start = (2 * i) % nr_workers;
+		worker->range_end = (2 * i + 1) % nr_workers;
 		worker->task = kthread_run(test0_thread1, worker, "lf_list-worker%d", i);
 		if (IS_ERR(worker->task)) {
 			kfree(worker);
+			pr_err("Worker %d failed to start.\n", i);
 			break;
 		}
 		worker->list_rl = list_rl;
 		list_add_tail(&worker->worker_list, &test_workers);
+		pr_info("Successfully added worker %d in test_workers list\n", i);
 	}
+
+	pr_info("Lock-free range lock module successfully loaded.\n");
 	return 0;
 }
 
@@ -51,7 +60,11 @@ static void test_lockfree_range_lock_mod_cleanup(void)
 		kfree(worker);
 	}
 	kfree(list_rl);
+	pr_info("Lock-free range lock module successfully removed.\n");
 }
+
+module_init(test_lockfree_range_lock_mod_init);
+module_exit(test_lockfree_range_lock_mod_cleanup);
 
 MODULE_AUTHOR("Sanglok Lee");
 MODULE_DESCRIPTION("Lock-free range lock module");
