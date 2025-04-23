@@ -19,8 +19,7 @@ struct LNode* InitNode(unsigned long long start, unsigned long long end, bool wr
 	return ret;
 }
 
-bool marked(volatile struct LNode* node) // Check if tagged pointer
-led to allocate memory for worker %d\n", i);{
+bool marked(volatile struct LNode* node){ // Check if tagged pointer
 	return (unsigned long long)(node) & 0x1; // Casting the address stored in the pointer to an integer
 }
 
@@ -226,10 +225,9 @@ void MutexRangeRelease(struct RangeLock* rl)
 	}
 	kfree(rl); // Physically delete Range Lock
 #else
+	pr_info("Delete node(range: %d - %d)", rl->node->start, rl->node->end);
 	DeleteNode(rl->node);
 	kfree(rl);
-
-	pr_info(
 #endif
 }
 
