@@ -242,8 +242,9 @@ int test0_thread1(void *data)
 		if(msleep_interruptible(500)){
 			break;
 		}
-
-		lock = RWRangeAcquire(worker->list_rl, range_start, range_end, true);
+		
+		bool reader_or_writer = (get_random_u32() % 2) == 0;  // randomly selects reader or writer
+		lock = RWRangeAcquire(worker->list_rl, range_start, range_end, reader_or_writer);
 		
 		BUG_ON(!lock);
 		pr_info("[worker %d] Inserted node(range: %d - %d, %s)\n", worker->worker_id, range_start, range_end, lock->node->reader ? "reader" : "writer");
