@@ -11,21 +11,20 @@
 
 #include "lockfree_list.h"
 
-LIST_HEAD(test_workers); // test_workers: global list head for worker threads
+LIST_HEAD(thread_workers); // thread_workers: global list head for worker threads
 
-extern int test0_thread1(void *data);
+extern int thread_task(void *data);
 
-static int __init test_lockfree_range_lock_mod_init(void)
+static int __init lockfree_rangelock_init(void)
 {
 	int nr_workers = num_online_cpus();
-	// worker_test_fn_t test_fn; 
-	int i;
 	struct ListRL *list_rl = kmalloc(sizeof(struct ListRL), GFP_KERNEL);
 
 	pr_info("Lock-free range lock module loading: %d workers\n", nr_workers);
-
+	
+	int i;
 	for (i = 0; i < nr_workers; i++) {
-		struct test_worker *worker = kmalloc(sizeof(struct test_worker), GFP_KERNEL);
+		struct thread_worker *worker = kmalloc(sizeof(struct thread_worker), GFP_KERNEL);
 		if (!worker) {
 			pr_err("Failed to allocate memory for worker %d\n", i);
 			continue;
@@ -33,26 +32,26 @@ static int __init test_lockfree_range_lock_mod_init(void)
 		worker->worker_id = i; 
 		worker->range_start = (2 * i) % nr_workers;
 		worker->range_end = (2 * i + 1) % nr_workers;
-		worker->task = kthread_run(test0_thread1, worker, "lf_list-worker%d", i);
+		worker->task = kthread_run(thread_task, worker, "lf_list-worker%d", i);
 		if (IS_ERR(worker->task)) {
 			kfree(worker);
 			pr_err("Worker %d failed to start.\n", i);
 			break;
 		}
 		worker->list_rl = list_rl;
-		list_add_tail(&worker->worker_list, &test_workers);
-		pr_info("Successfully added worker %d in test_workers list\n", i);
+		list_add_tail(&worker->worker_list, &thread_workers);
+		pr_info("Successfully added worker %d in thread_workers list\n", i);
 	}
 
 	pr_info("Lock-free range lock module successfully loaded.\n");
 	return 0;
 }
 
-static void test_lockfree_range_lock_mod_cleanup(void)
+static void __exit lockfree_rangelock_exit(void)
 {
-	struct test_worker *worker, *tmp;
+	struct thread_worker *worker, *tmp;
 	struct ListRL *list_rl = NULL;
-	list_for_each_entry_safe(worker, tmp, &test_workers, worker_list) {
+	list_for_each_entry_safe(worker, tmp, &thread_workers, worker_list) {
 		kthread_stop(worker->task);
 		list_del(&worker->worker_list);
 		if (!list_rl)
@@ -63,8 +62,8 @@ static void test_lockfree_range_lock_mod_cleanup(void)
 	pr_info("Lock-free range lock module successfully removed.\n");
 }
 
-module_init(test_lockfree_range_lock_mod_init);
-module_exit(test_lockfree_range_lock_mod_cleanup);
+module_init(lockfree_rangelock_init);
+module_exit(lockfree_rangelock_exit);
 
 MODULE_AUTHOR("Sanglok Lee");
 MODULE_DESCRIPTION("Lock-free range lock module");

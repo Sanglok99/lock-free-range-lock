@@ -1,21 +1,22 @@
 #include "lockfree_list.h"
-#include <linux/kthread.h>          // kthread_should_stop
-#include <linux/delay.h>            // msleep, msleep_interruptible
+#include <linux/kthread.h> // kthread_should_stop
+#include <linux/delay.h> // msleep, msleep_interruptible
 #include <asm/cmpxchg.h>
+#include <linux/random.h> // get_random_u32()
 
 #define TRY_ONCE true
 
-extern struct list_head test_workers;
+extern struct list_head thread_workers;
 
 void DeleteNode(struct LNode* lock);
 
-struct LNode* InitNode(unsigned long long start, unsigned long long end, bool writer)
+struct LNode* InitNode(unsigned long long start, unsigned long long end, bool reader)
 {
 	struct LNode* ret = kmalloc(sizeof(struct LNode), GFP_KERNEL);
 	ret->start = start;
 	ret->end = end;
 	ret->next = NULL;
-	ret->reader = !writer;
+	ret->reader = reader;
 	return ret;
 }
 
@@ -168,7 +169,7 @@ int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try_on
 }
 
 struct RangeLock* RWRangeAcquire(struct ListRL* list_rl,
-		unsigned long long start, unsigned long long end, bool writer)
+		unsigned long long start, unsigned long long end, bool reader)
 {
 	struct RangeLock* rl = kmalloc(sizeof(struct RangeLock), GFP_KERNEL);
 	int ret = 0;
@@ -177,7 +178,7 @@ struct RangeLock* RWRangeAcquire(struct ListRL* list_rl,
 		assert(start == 0);
 		rl->bucket = ALL_RANGE;
 		for (int i = 0 ; i < BUCKET_CNT ; i++) {
-			rl->node[i] = InitNode(0, MAX_SIZE, writer);
+			rl->node[i] = InitNode(0, MAX_SIZE, reader);
 			do {
 				ret = InsertNodeRW(&list_rl->head[i], rl->node[i], TRY_ONCE);
 			} while(ret);
@@ -186,14 +187,14 @@ struct RangeLock* RWRangeAcquire(struct ListRL* list_rl,
 		int i = start % BUCKET_CNT;
 		assert(start + 1 == end);
 		rl->bucket = i;
-		rl->node[i] = InitNode(start, end, writer);
+		rl->node[i] = InitNode(start, end, reader);
 		do {
 			ret = InsertNodeRW(&list_rl->head[i], rl->node[i], TRY_ONCE);
 		} while(ret);
 	}
 	return rl;
 #else
-	rl->node = InitNode(start, end, writer);
+	rl->node = InitNode(start, end, reader);
 	do {
 		ret = InsertNodeRW(&list_rl->head, rl->node, TRY_ONCE);
 	} while(ret); // Repeat while ret==1
@@ -225,26 +226,26 @@ void MutexRangeRelease(struct RangeLock* rl)
 	}
 	kfree(rl); // Physically delete Range Lock
 #else
-	pr_info("Delete node(range: %d - %d)", rl->node->start, rl->node->end);
 	DeleteNode(rl->node);
 	kfree(rl);
 #endif
 }
 
-int test0_thread1(void *data)
+int thread_task(void *data)
 {
-	struct test_worker *worker = data;
-	// struct RangeLock* lock, *lock2; // lock2 unused	
+	struct thread_worker *worker = data;	
 	struct RangeLock* lock;
 	int range_start = worker->range_start;
 	int range_end = worker->range_end;
-	// int count = 0; // unused
+	int count = 0;
 	while (!kthread_should_stop()) {
 		if(msleep_interruptible(500)){
 			break;
 		}
 
-		lock = RWRangeAcquire(worker->list_rl, range_start, range_end, true);
+		bool reader = (get_random_u32() % 2) == 0;  // randomly allocates reader or writer
+		lock = RWRangeAcquire(worker->list_rl, range_start, range_end, reader);
+		pr_info("[worker %d] Inserted node(range: %d - %d, %s)\n", worker->worker_id, range_start, range_end, reader ? "reader" : "writer");
 		
 		BUG_ON(!lock);
 
@@ -253,11 +254,12 @@ int test0_thread1(void *data)
 		}
 
 		MutexRangeRelease(lock);
-		// count++; // unused
+		count++;
 
 		if(msleep_interruptible(1000)){
 			break;
 		}
 	}
+	pr_info("[worker %d] lock cycles completed: %d\n", worker->worker_id, count);
 	return 0;
 }

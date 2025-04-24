@@ -39,7 +39,7 @@ struct RangeLock {
 #endif
 };
 
-struct test_worker {
+struct thread_worker {
 	int range_start;
 	int range_end;
 	struct ListRL *list_rl;
