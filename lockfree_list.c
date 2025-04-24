@@ -225,7 +225,6 @@ void MutexRangeRelease(struct RangeLock* rl)
 	}
 	kfree(rl); // Physically delete Range Lock
 #else
-	pr_info("Delete node(range: %d - %d)", rl->node->start, rl->node->end);
 	DeleteNode(rl->node);
 	kfree(rl);
 #endif
@@ -238,7 +237,7 @@ int test0_thread1(void *data)
 	struct RangeLock* lock;
 	int range_start = worker->range_start;
 	int range_end = worker->range_end;
-	// int count = 0; // unused
+	int count = 0;
 	while (!kthread_should_stop()) {
 		if(msleep_interruptible(500)){
 			break;
@@ -247,17 +246,20 @@ int test0_thread1(void *data)
 		lock = RWRangeAcquire(worker->list_rl, range_start, range_end, true);
 		
 		BUG_ON(!lock);
+		pr_info("[worker %d] Inserted node(range: %d - %d, %s)\n", worker->worker_id, range_start, range_end, lock->node->reader ? "reader" : "writer");
 
 		if(msleep_interruptible(1000)){
 			break;
 		}
 
+		pr_info("[worker %d] Deleting node(range: %d - %d, %s)\n", worker->worker_id, range_start, range_end, lock->node->reader ? "reader" : "writer");
 		MutexRangeRelease(lock);
-		// count++; // unused
+		count++;
 
 		if(msleep_interruptible(1000)){
 			break;
 		}
 	}
+	pr_info("[worker %d] lock cycles completed: %d\n", worker->worker_id, count);
 	return 0;
 }
