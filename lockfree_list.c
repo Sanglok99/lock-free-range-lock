@@ -4,7 +4,7 @@
 #include <asm/cmpxchg.h>
 #include <linux/random.h> // get_random_u32()
 
-#define TRY_ONCE true
+#define TRY_ONCE false
 
 extern struct list_head thread_workers;
 
@@ -244,8 +244,8 @@ int thread_task(void *data)
 		}
 
 		bool reader = (get_random_u32() % 2) == 0;  // randomly allocates reader or writer
-		lock = RWRangeAcquire(worker->list_rl, range_start, range_end, reader);
-		pr_info("[worker %d] Inserted node(range: %d - %d, %s)\n", worker->worker_id, range_start, range_end, reader ? "reader" : "writer");
+		lock = RWRangeAcquire(worker->list_rl, range_start, range_end, false);
+		pr_info("[worker %d] Inserted node(range: %d - %d, %s)\n", worker->worker_id, range_start, range_end, lock->node->reader ? "reader" : "writer");
 		
 		BUG_ON(!lock);
 
