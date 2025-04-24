@@ -3,7 +3,7 @@
 #include <linux/delay.h>            // msleep, msleep_interruptible
 #include <asm/cmpxchg.h>
 
-#define TRY_ONCE true
+#define TRY_ONCE false
 
 extern struct list_head test_workers;
 
@@ -37,7 +37,8 @@ struct LNode* unmark(volatile struct LNode* node) // Get the original address of
 int r_validate(struct LNode* lock, bool try_once)
 {
 	volatile struct LNode** prev = &lock->next;
-	struct LNode* cur = unmark(*prev);
+	// struct LNode* cur = unmark(*prev);
+	struct LNode* cur = unmark(rcu_dereference(*prev));
 	while (true) {
 		if (!cur) {
 			return 0;
@@ -60,7 +61,8 @@ int r_validate(struct LNode* lock, bool try_once)
 			if (try_once) {
 				return -1;
 			}
-			while (!marked(cur->next)) {
+			while (!marked(cur->next)) {	
+				cond_resched();
 				// cur = *prev;
 				// instead use
 				cur = rcu_dereference(*prev);
@@ -257,7 +259,8 @@ int test0_thread1(void *data)
 			break;
 		}
 
-		lock = RWRangeAcquire(worker->list_rl, range_start, range_end, true);
+		bool reader = (get_random_u32() % 2) == 0;  // randomly allocates reader or writer
+		lock = RWRangeAcquire(worker->list_rl, range_start, range_end, reader);
 		
 		BUG_ON(!lock);
 		pr_info("[worker %d] Inserted node(range: %d - %d, %s)\n", worker->worker_id, range_start, range_end, lock->node->reader ? "reader" : "writer");
