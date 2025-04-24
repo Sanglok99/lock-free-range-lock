@@ -9,6 +9,12 @@ extern struct list_head test_workers;
 
 void DeleteNode(struct LNode* lock);
 
+void deferred_free_rcu(struct rcu_head *rcu)
+{
+	struct LNode* node = container_of(rcu, struct LNode, rcu);
+	kfree(node);
+}
+
 struct LNode* InitNode(unsigned long long start, unsigned long long end, bool writer)
 {
 	struct LNode* ret = kmalloc(sizeof(struct LNode), GFP_KERNEL);
@@ -42,7 +48,9 @@ int r_validate(struct LNode* lock, bool try_once)
 		if (marked(cur->next)) {
 			struct LNode* next = unmark(cur->next);
 			if (cmpxchg(prev, cur, next) == cur) {
-				kfree_rcu(cur, rcu);
+				// kfree_rcu(cur, rcu);
+				// instead use
+				call_rcu(&cur->rcu, deferred_free_rcu); // ?
 			}
 			cur = next;
 		} else if (cur->reader) {
@@ -53,7 +61,9 @@ int r_validate(struct LNode* lock, bool try_once)
 				return -1;
 			}
 			while (!marked(cur->next)) {
-				cur = *prev;
+				// cur = *prev;
+				// instead use
+				cur = rcu_dereference(*prev);
 			}
 		}
 	}
@@ -62,7 +72,7 @@ int r_validate(struct LNode* lock, bool try_once)
 int w_validate(volatile struct LNode** listrl, struct LNode* lock)
 {
 	volatile struct LNode** prev = listrl;
-	struct LNode* cur = unmark(*prev);
+	struct LNode* cur = unmark(rcu_dereference(*prev));
 	while (true) {
 		if (!cur) {
 			return 0;
@@ -73,13 +83,15 @@ int w_validate(volatile struct LNode** listrl, struct LNode* lock)
 		if (marked(cur->next)) {
 			struct LNode* next = unmark(cur->next);
 			if (cmpxchg(prev, cur, next) == cur) {
-				kfree_rcu(cur, rcu);
+				// kfree_rcu(cur, rcu);
+				// instead use
+				call_rcu(&cur->rcu, deferred_free_rcu);
 			}
 			cur = next;
 		} else {
 			if (cur->end <= lock->start) {
 				prev = &cur->next;
-				cur = unmark(*prev);
+				cur = unmark(rcu_dereference(*prev));
 			} else {
 				DeleteNode(lock);
 				return 1;
@@ -115,7 +127,7 @@ int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try_on
 	rcu_read_lock();
 	while (true) {
 		volatile struct LNode** prev = listrl;
-		struct LNode* cur = *prev;
+		struct LNode* cur = rcu_dereference(*prev);
 		while (true) {
 			if (marked(cur)){ // If current is logically deleted, try again from the head
 				break;
@@ -124,25 +136,27 @@ int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try_on
 				if (cur && marked(cur->next)) { // Case 1) If cur->next is logically deleted...
 					struct LNode* next = unmark(cur->next); // Decode LNode address from tagged pointer
 					if (cmpxchg(prev, cur, next) == cur) { // Physically delete when no more reference
-						kfree_rcu(cur, rcu);
+						// kfree_rcu(cur, rcu);
+						// instead use
+						call_rcu(&cur->rcu, deferred_free_rcu);
 					}
 					cur = next;
 				}
 				else { // Case 2) If cur is not logically deleted...
 					int ret = compareRW(cur, lock); /* Compare range of cur and lock;
 									-1: cur < lock
-									0: cur == lock (conflict)
+									
 									+1: cur > lock */
 					if (ret == -1) { // Case A) cur < lock; Proceed to the next lock in this bucket
 						prev = &cur->next;
-						cur = *prev;
+						cur = rcu_dereference(*prev);
 					} else if (ret == 0) { // Case B) Locks conflict each other
 						if (try_once) {
 							rcu_read_unlock();
 							return -1;
 						}
 						while (!marked(cur->next)) {
-							cur = *prev;
+							cur = rcu_dereference(*prev);
 						}
 					} else if (ret == 1) { // Case C) lock < cur; Found where to insert lock
 						lock->next = cur;
@@ -157,7 +171,7 @@ int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try_on
 							rcu_read_unlock();
 							return ret;
 						}
-						cur = *prev;
+						cur = rcu_dereference(*prev);
 					}
 				}
 			}
