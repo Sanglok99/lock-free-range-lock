@@ -17,7 +17,8 @@ extern int test0_thread1(void *data);
 
 static int __init test_lockfree_range_lock_mod_init(void)
 {
-	int nr_workers = num_online_cpus();
+	//int nr_workers = num_online_cpus();
+	int nr_workers = 3;
 	// worker_test_fn_t test_fn; 
 	int i;
 	struct ListRL *list_rl = kmalloc(sizeof(struct ListRL), GFP_KERNEL);

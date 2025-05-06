@@ -128,14 +128,19 @@ int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try_on
 {
 	rcu_read_lock();
 	while (true) {
+		printk("[%s](%u) traversal start\n", __func__, smp_processor_id());
 		volatile struct LNode** prev = listrl;
 		struct LNode* cur = rcu_dereference(*prev);
 		while (true) {
+			printk("[%s](%u) if 1 start\n", __func__, smp_processor_id());
 			if (marked(cur)){ // If current is logically deleted, try again from the head
+				printk("[%s](%u) if 1 true(cur logically deleted)\n", __func__, smp_processor_id());
 				break;
 			}
 			else {
+                printk("[%s](%u) if 2 start\n", __func__, smp_processor_id());
 				if (cur && marked(cur->next)) { // Case 1) If cur->next is logically deleted...
+					printk("[%s](%u) if 2 true(cur->next logically deleted)\n", __func__, smp_processor_id());
 					struct LNode* next = unmark(cur->next); // Decode LNode address from tagged pointer
 					if (cmpxchg(prev, cur, next) == cur) { // Physically delete when no more reference
 						// kfree_rcu(cur, rcu);
@@ -145,10 +150,9 @@ int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try_on
 					cur = next;
 				}
 				else { // Case 2) If cur is not logically deleted...
-					int ret = compareRW(cur, lock); /* Compare range of cur and lock;
-									-1: cur < lock
-									
-									+1: cur > lock */
+                    printk("[%s](%u) if 1 and 2 passed\n", __func__, smp_processor_id());
+					int ret = compareRW(cur, lock); // Compare range of cur and lock
+                    printk("[%s](%u) compareRW result = %d\n", __func__, smp_processor_id(), ret);
 					if (ret == -1) { // Case A) cur < lock; Proceed to the next lock in this bucket
 						prev = &cur->next;
 						cur = rcu_dereference(*prev);
@@ -164,12 +168,14 @@ int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try_on
 						lock->next = cur;
 						if (cmpxchg(prev, cur, lock) == cur) { // Try to insert new lock before cur
 							// Insertion succeed; validate the CAS result
-							int ret = 0; 
+							int ret = 0;
+                            /*
 							if (lock->reader) {
 								ret = r_validate(lock, try_once);
 							} else {
 								ret = w_validate(listrl, lock);
 							}
+                            */
 							rcu_read_unlock();
 							return ret;
 						}
