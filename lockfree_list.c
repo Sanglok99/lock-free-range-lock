@@ -3,7 +3,7 @@
 #include <linux/delay.h>            // msleep, msleep_interruptible
 #include <asm/cmpxchg.h>
 
-#define TRY_ONCE false
+#define TRY_ONCE 1
 
 extern struct list_head test_workers;
 
@@ -128,19 +128,14 @@ int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try_on
 {
 	rcu_read_lock();
 	while (true) {
-		printk("[%s](%u) traversal start\n", __func__, smp_processor_id());
 		volatile struct LNode** prev = listrl;
 		struct LNode* cur = rcu_dereference(*prev);
 		while (true) {
-			printk("[%s](%u) if 1 start\n", __func__, smp_processor_id());
 			if (marked(cur)){ // If current is logically deleted, try again from the head
-				printk("[%s](%u) if 1 true(cur logically deleted)\n", __func__, smp_processor_id());
 				break;
 			}
 			else {
-                printk("[%s](%u) if 2 start\n", __func__, smp_processor_id());
 				if (cur && marked(cur->next)) { // Case 1) If cur->next is logically deleted...
-					printk("[%s](%u) if 2 true(cur->next logically deleted)\n", __func__, smp_processor_id());
 					struct LNode* next = unmark(cur->next); // Decode LNode address from tagged pointer
 					if (cmpxchg(prev, cur, next) == cur) { // Physically delete when no more reference
 						// kfree_rcu(cur, rcu);
@@ -150,9 +145,7 @@ int InsertNodeRW(volatile struct LNode** listrl, struct LNode* lock, bool try_on
 					cur = next;
 				}
 				else { // Case 2) If cur is not logically deleted...
-                    printk("[%s](%u) if 1 and 2 passed\n", __func__, smp_processor_id());
 					int ret = compareRW(cur, lock); // Compare range of cur and lock
-                    printk("[%s](%u) compareRW result = %d\n", __func__, smp_processor_id(), ret);
 					if (ret == -1) { // Case A) cur < lock; Proceed to the next lock in this bucket
 						prev = &cur->next;
 						cur = rcu_dereference(*prev);

@@ -8,6 +8,7 @@
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/printk.h>
+#include <asm/cmpxchg.h>
 
 #include "lockfree_list.h"
 
@@ -17,9 +18,7 @@ extern int test0_thread1(void *data);
 
 static int __init test_lockfree_range_lock_mod_init(void)
 {
-	//int nr_workers = num_online_cpus();
-	int nr_workers = 3;
-	// worker_test_fn_t test_fn; 
+	int nr_workers = num_online_cpus();
 	int i;
 	struct ListRL *list_rl = kmalloc(sizeof(struct ListRL), GFP_KERNEL);
 
@@ -42,7 +41,7 @@ static int __init test_lockfree_range_lock_mod_init(void)
 		}
 		worker->list_rl = list_rl;
 		list_add_tail(&worker->worker_list, &test_workers);
-		pr_info("Successfully added worker %d in test_workers list\n", i);
+		printk("[%s](%u) Successfully added worker %d in test_workers list(range: %d - %d)\n", __func__, smp_processor_id(), i, worker->range_start, worker->range_end);
 	}
 
 	pr_info("Lock-free range lock module successfully loaded.\n");
